@@ -1,2 +1,3 @@
-# my-site-testing
-testing a website with gh-pages. In esm244
+# This is my website
+
+Contains data science projects & teaching materials
