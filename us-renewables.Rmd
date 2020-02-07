@@ -6,25 +6,179 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+```{r}
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(here)
+library(paletteer)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(feasts)
+library(forecast)
+library(sf)
+library(tmap)
+library(mapview)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+## Monthly US renewables
+```{r}
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+us_renew <- read_csv(here("data", "renewables_cons_prod.csv")) %>% 
+  clean_names()
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+- Make variable levels for "description" all lowercaseuse
+- only keep observations where "description" variable contains "consumption"
+- remove any obs where description level has the string "total"
+```{r}
+
+renew_clean <- us_renew %>%
+  mutate(description = str_to_lower(description)) %>% 
+  filter(str_detect(description, pattern = "consumption")) %>% # str_detect is logical TRUE/FALSE
+  filter(!str_detect(description, pattern = "total"))
+
+```
+
+```{r}
+
+renew_date <- renew_clean %>%
+  mutate(yr_mo_day = lubridate::parse_date_time(yyyymm, "ym")) %>%
+  mutate(month_sep = yearmonth(yr_mo_day)) %>% 
+  mutate(value = as.numeric(value)) %>% 
+  drop_na(month_sep, value)
+
+class(renew_date$month_sep)
+
+# parse data using lubridate::month()
+renew_parsed <- renew_date %>% 
+  mutate(month = month(yr_mo_day, label = TRUE)) %>% 
+  mutate(year = year(yr_mo_day))
+```
+
+### Look at it:
+
+```{r}
+
+renew_gg <- ggplot(data = renew_date,
+                   aes(x = month_sep,
+                       y = value,
+                       group = description)) +
+  geom_line(aes(color = description))
+
+renew_gg
+
+# View(palettes_d_names) # to view all the palletes in paletteer
+```
+
+```{r}
+
+renew_gg +
+  scale_color_paletteer_d("ggsci::default_aaas")
+
+```
+
+### Coerce renew_parsed to a tsibble
+
+```{r}
+
+renew_ts <-  as_tsibble(renew_parsed,
+                       key = description, index = month_sep)
+
+```
+
+```{r}
+
+renew_ts %>% autoplot(value)
+renew_ts %>%  gg_subseries(value)
+renew_ts %>%  gg_season(value)
+
+# to reproduce gg_season using ggplot
+# ggplot(data = renew_parsed, aes(x=month, y=value, group = year)) +
+#   geom_line(aes(color = year)) +
+#   facet_wrap(~description, 
+#              ncol = 1,
+#              scales = "free",
+#              strip.position = "right")
+```
+
+### just look at the hydroelectric energy consumption
+```{r}
+hydro_ts <- renew_ts %>% 
+  filter(description == "hydroelectric power consumption")
+
+hydro_ts %>% autoplot(value) 
+hydro_ts %>% gg_subseries(value)
+hydro_ts %>% gg_season(value)
+```
+
+### quarterly average consumption for hydro
+
+```{r}
+
+hydro_quarterly <- hydro_ts %>% 
+  index_by(year_qu = ~(yearquarter(.))) %>% 
+  summarise(avg_consumption = mean(value))
+
+head(hydro_quarterly)
+
+```
+
+### decompose that hydro_ts
+
+```{r}
+
+dcmp <- hydro_ts %>% 
+  model(STL(value ~ season(window = 5)))
+
+components(dcmp) %>% autoplot()
+
+# residual is ussually < 10% of original scale value
+```
+
+
+```{r}
+hist(components(dcmp)$remainder)
+```
+
+```{r}
+hydro_ts %>% 
+  ACF(value) %>% 
+  autoplot()
+```
+
+### warning, do more research
+
+```{r}
+
+hydro_model <- hydro_ts %>% 
+  model(
+    ARIMA(value)
+  ) %>% 
+  fabletools::forecast(h = "4 years")
+
+hydro_model %>% autoplot(filter(hydro_ts, year(month_sep) > 2010))
+```
+
+### make a worldmap in a coupe of minutes
+
+```{r}
+world <- read_sf(dsn = here("data", "TM_WORLD_BORDERS_SIMPL-0.3-1"),
+                 layer = "TM_WORLD_BORDERS_SIMPL-0.3")
+
+mapview(world)
+```
+
+
+
+
+
+
